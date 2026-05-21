@@ -515,6 +515,15 @@ fn parse_value_or_json_string(value: Option<&Value>) -> Option<Value> {
         if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
             return Some(parsed);
         }
+        if let Ok(decoded) = BASE64_STANDARD.decode(trimmed) {
+            if let Some(decrypted) = byte_crypto_decrypt(&decoded) {
+                if let Ok(decrypted_text) = String::from_utf8(decrypted) {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(&decrypted_text) {
+                        return Some(parsed);
+                    }
+                }
+            }
+        }
     }
     None
 }
@@ -1655,6 +1664,13 @@ fn to_json_string_value(value: &Value) -> Result<Value, String> {
     Ok(Value::String(text))
 }
 
+fn to_encrypted_json_string_value(value: &Value) -> Result<Value, String> {
+    let text =
+        serde_json::to_string(value).map_err(|e| format!("序列化 Trae 存储键值失败: {}", e))?;
+    let encrypted = byte_crypto_encrypt_v1(text.as_bytes())?;
+    Ok(Value::String(BASE64_STANDARD.encode(encrypted)))
+}
+
 fn pick_string_multi(roots: &[Option<&Value>], paths: &[&[&str]]) -> Option<String> {
     for root in roots {
         if let Some(value) = pick_string(*root, paths) {
@@ -2285,21 +2301,35 @@ pub fn inject_to_trae_at_path(storage_path: &Path, account_id: &str) -> Result<(
     let (auth_storage_key, server_storage_key, entitlement_storage_key) =
         resolve_storage_keys_for_inject(root_obj);
 
+    let mut sqlite_updates = Vec::new();
+
     let existing_auth_raw = root_obj
         .get(auth_storage_key.as_str())
         .and_then(|value| parse_value_or_json_string(Some(value)));
     let auth_raw = ensure_auth_raw_for_inject(&account, existing_auth_raw.as_ref());
-    root_obj.insert(auth_storage_key, to_json_string_value(&auth_raw)?);
+    
+    // Trae >= 3.5.59 requires encrypted auth info
+    let encrypted_auth_value = to_encrypted_json_string_value(&auth_raw)?;
+    root_obj.insert(auth_storage_key.clone(), encrypted_auth_value.clone());
+    if let Some(text) = encrypted_auth_value.as_str() {
+        sqlite_updates.push((auth_storage_key.clone(), text.to_string()));
+    }
 
     if let Some(entitlement_raw) = ensure_entitlement_raw_for_inject(&account) {
         root_obj.insert(
-            entitlement_storage_key,
+            entitlement_storage_key.clone(),
             to_json_string_value(&entitlement_raw)?,
         );
+        if let Ok(text) = serde_json::to_string(&entitlement_raw) {
+            sqlite_updates.push((entitlement_storage_key, text));
+        }
     }
 
     if let Some(server_raw) = ensure_server_raw_for_inject(&account) {
-        root_obj.insert(server_storage_key, to_json_string_value(&server_raw)?);
+        root_obj.insert(server_storage_key.clone(), to_json_string_value(&server_raw)?);
+        if let Ok(text) = serde_json::to_string(&server_raw) {
+            sqlite_updates.push((server_storage_key, text));
+        }
     }
 
     let user_tag = resolve_user_tag_for_inject(&account);
@@ -2311,16 +2341,26 @@ pub fn inject_to_trae_at_path(storage_path: &Path, account_id: &str) -> Result<(
     if let Some(encoded_map) = encoded_usertag_map {
         root_obj.insert(
             TRAE_STORAGE_USERTAG_KEY.to_string(),
-            Value::String(encoded_map),
+            Value::String(encoded_map.clone()),
         );
+        sqlite_updates.push((TRAE_STORAGE_USERTAG_KEY.to_string(), encoded_map));
     } else if let Some(usertag_raw) = normalize_non_empty(account.trae_usertag_raw.as_deref()) {
         root_obj.insert(
             TRAE_STORAGE_USERTAG_KEY.to_string(),
-            Value::String(usertag_raw),
+            Value::String(usertag_raw.clone()),
         );
+        sqlite_updates.push((TRAE_STORAGE_USERTAG_KEY.to_string(), usertag_raw));
     }
 
     write_storage_json(storage_path, &root)?;
+
+    // 同步到新版本 Trae 的 SQLite 存储 (state.vscdb)
+    let sqlite_path = storage_path.with_file_name("state.vscdb");
+    if sqlite_path.exists() {
+        if let Err(err) = inject_to_trae_sqlite(sqlite_path.as_path(), sqlite_updates) {
+            logger::log_warn(&format!("同步 Trae state.vscdb 失败: {}", err));
+        }
+    }
 
     logger::log_info(&format!(
         "[Trae Account] 注入成功: id={}, email={}, path={}",
@@ -2328,6 +2368,20 @@ pub fn inject_to_trae_at_path(storage_path: &Path, account_id: &str) -> Result<(
         account.email,
         storage_path.display()
     ));
+    Ok(())
+}
+
+fn inject_to_trae_sqlite(sqlite_path: &Path, updates: Vec<(String, String)>) -> Result<(), String> {
+    let conn = rusqlite::Connection::open(sqlite_path)
+        .map_err(|e| format!("无法打开 state.vscdb: {}", e))?;
+
+    for (key, value) in updates {
+        conn.execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        ).map_err(|e| format!("写入 {} 失败: {}", key, e))?;
+    }
+
     Ok(())
 }
 
