@@ -1,6 +1,6 @@
 # Cockpit Tools
 
-[English](README.en.md) · 简体中文
+[English](README.en.md) · [Portuguese (BR)](README.pt-br.md) · 简体中文
 
 [![GitHub stars](https://img.shields.io/github/stars/jlcodes99/cockpit-tools?style=flat&color=gold)](https://github.com/jlcodes99/cockpit-tools)
 [![GitHub downloads](https://img.shields.io/github/downloads/jlcodes99/cockpit-tools/total?style=flat&color=blue)](https://github.com/jlcodes99/cockpit-tools/releases)
@@ -63,6 +63,7 @@
 - **专属支持**：专为 Codex 优化的账号管理体验
 - **配额展示**：清晰展示 Hourly 和 Weekly 配额状态
 - **计划识别**：自动识别账号 Plan 类型 (Basic, Plus, Team 等)
+- **API 服务**：本地 Codex API 服务由内置 CLIProxyAPI sidecar 驱动，Cockpit Tools 负责账号同步、配置投影、状态与用量统计；Base URL、API Key 与用户操作方式保持不变。
 
 > ![Codex Accounts](docs/images/codex_list.png)
 
@@ -396,6 +397,7 @@ QQ 交流群、微信群或新建的 Telegram 畅聊群都可以加入。
 ## 致谢
 
 - Antigravity IDE 账号切号逻辑参考：[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
+- Codex API 服务由内置 sidecar 集成：[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 感谢项目作者的开源贡献！如果这些项目对你有帮助，也请给他们点个 ⭐ Star 支持一下！
 
